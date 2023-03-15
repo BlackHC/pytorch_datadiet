@@ -3,4 +3,4 @@
 set -e
 
 # Install dependencies
-pip install torch torchvision
+pip install torch torchvision "joblib== 1.2.0" ipython matplotlib seaborn pandas scikit-learn scipy tqdm

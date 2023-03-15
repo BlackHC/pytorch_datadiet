@@ -14,12 +14,16 @@ import math
 import os
 import copy
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 import torchvision
 from torchvision import transforms
+
+from functorch.experimental import replace_all_batch_norm_modules_
+from functorch import make_functional_with_buffers, vmap, grad
 
 ## <-- teaching comments
 # <-- functional comments
@@ -97,7 +101,7 @@ if not os.path.exists(hyp['misc']['data_location']):
 
   # use the dataloader to get a single batch of all of the dataset items at once.
   train_dataset_gpu_loader = torch.utils.data.DataLoader(cifar10, batch_size=len(cifar10), drop_last=True,
-                                                         shuffle=True, num_workers=2, persistent_workers=False)
+                                                         shuffle=False, num_workers=2, persistent_workers=False)
   eval_dataset_gpu_loader = torch.utils.data.DataLoader(cifar10_eval, batch_size=len(cifar10_eval), drop_last=True,
                                                         shuffle=False, num_workers=1, persistent_workers=False)
 
@@ -144,6 +148,11 @@ else:
   ## So as long as you run the above loading process once, and keep the file on the disc it's specified by default in the above
   ## hyp dictionary, then we should be good. :)
   data = torch.load(hyp['misc']['data_location'])
+
+# Copy the train data to the train_scores field, since we'll be using that for computing the EL2N scores
+data['train_scores'] = {}
+data['train_scores']['images'] = data['train']['images'].clone()
+data['train_scores']['targets'] = data['train']['targets'].clone()
 
 ## As you'll note above and below, one difference is that we don't count loading the raw data to GPU since it's such a variable operation, and can sort of get in the way
 ## of measuring other things. That said, measuring the preprocessing (outside of the padding) is still important to us.
@@ -492,20 +501,22 @@ class NetworkEMA(nn.Module):
 @torch.no_grad()
 def get_batches(data_dict, key, batchsize, epoch_fraction=1., cutmix_size=None):
   num_epoch_examples = len(data_dict[key]['images'])
-  shuffled = torch.randperm(num_epoch_examples, device='cuda')
-  if epoch_fraction < 1:
-    shuffled = shuffled[:batchsize * round(epoch_fraction * shuffled.shape[
-      0] / batchsize)]  # TODO: Might be slightly inaccurate, let's fix this later... :) :D :confetti: :fireworks:
-    num_epoch_examples = shuffled.shape[0]
-  crop_size = 32
-  ## Here, we prep the dataset by applying all data augmentations in batches ahead of time before each epoch, then we return an iterator below
-  ## that iterates in chunks over with a random derangement (i.e. shuffled indices) of the individual examples. So we get perfectly-shuffled
-  ## batches (which skip the last batch if it's not a full batch), but everything seems to be (and hopefully is! :D) properly shuffled. :)
   if key == 'train':
+    shuffled = torch.randperm(num_epoch_examples, device='cuda')
+    if epoch_fraction < 1:
+      shuffled = shuffled[:batchsize * round(epoch_fraction * shuffled.shape[
+        0] / batchsize)]  # TODO: Might be slightly inaccurate, let's fix this later... :) :D :confetti: :fireworks:
+      num_epoch_examples = shuffled.shape[0]
+    crop_size = 32
+    ## Here, we prep the dataset by applying all data augmentations in batches ahead of time before each epoch, then we return an iterator below
+    ## that iterates in chunks over with a random derangement (i.e. shuffled indices) of the individual examples. So we get perfectly-shuffled
+    ## batches (which skip the last batch if it's not a full batch), but everything seems to be (and hopefully is! :D) properly shuffled. :)
+
     images = batch_crop(data_dict[key]['images'], crop_size)  # TODO: hardcoded image size for now?
     images = batch_flip_lr(images)
     images, targets = batch_cutmix(images, data_dict[key]['targets'], patch_size=cutmix_size)
   else:
+    shuffled = torch.arange(num_epoch_examples, device='cuda')
     images = data_dict[key]['images']
     targets = data_dict[key]['targets']
 
@@ -568,7 +579,70 @@ print_training_details(logging_columns_list,
 #           Train and Eval             #
 ########################################
 
-def main():
+def compute_el2n_score(unnormalized_model_outputs, targets):
+  """
+  The EL2N score the error-L2 norm score, ie the Brier score of a single sample with its target (one-hot) label.
+  :param unnormalized_model_outputs: BXC the unnormalized model outputs, ie the logits
+  :param targets: BxC the one-hot target labels
+  :return:
+      a tensor of shape B with the EL2N score for each sample
+  """
+  # compute the softmax of the unnormalized model outputs
+  softmax_outputs = F.softmax(unnormalized_model_outputs, dim=1)
+  # compute the squared L2 norm of the difference between the softmax outputs and the target labels
+  el2n_score = torch.sum((softmax_outputs - targets) ** 2, dim=1)
+  return el2n_score
+
+
+def evaluate_el2n_and_grand(net, epoch):
+  el2n_scores, grand_scores = None, None
+
+  if epoch == 1:
+    print("Evaluating EL2N scores...")
+    el2n_scores = []
+
+    with torch.no_grad():
+      for inputs, targets in get_batches(data, key='train_scores', batchsize=2500):
+        outputs = net(inputs)
+        el2n_batch_scores = compute_el2n_score(outputs, targets)
+        el2n_scores.append(el2n_batch_scores.detach().cpu().numpy())
+
+    el2n_scores = np.concatenate(el2n_scores)
+
+  if epoch == -1 or epoch == 1:
+    fmodel, params, buffers = make_functional_with_buffers(net)
+
+    fmodel.eval()
+
+    def compute_loss_stateless_model(params, buffers, sample, target):
+      batch = sample.unsqueeze(0)
+      targets = target.unsqueeze(0)
+
+      predictions = fmodel(params, buffers, batch)
+      loss = F.cross_entropy(predictions, targets)
+      return loss
+
+    ft_compute_grad = grad(compute_loss_stateless_model)
+    ft_compute_sample_grad = vmap(ft_compute_grad, in_dims=(None, None, 0, 0))
+
+    print("Evaluating GRAND scores...")
+    grad_norms = []
+
+    for inputs, targets in get_batches(data, key='train_scores', batchsize=250):
+      ft_per_sample_grads = ft_compute_sample_grad(params, buffers, inputs, targets)
+
+      squared_norm = 0
+      for param_grad in ft_per_sample_grads:
+        squared_norm += param_grad.flatten(1).square().sum(dim=-1)
+      grad_norms.append(squared_norm.detach().cpu().numpy() ** 0.5)
+
+    grad_norms = np.concatenate(grad_norms, axis=0)
+    grand_scores = grad_norms
+
+  return el2n_scores, grand_scores
+
+
+def main(compute_scores=True, only_scores_at_init=False):
   # Initializing constants for the whole run.
   net_ema = None  ## Reset any existing network emas, we want to have _something_ to check for existence so we can initialize the EMA right from where the network is during training
   ## (as opposed to initializing the network_ema from the randomly-initialized starter network, then forcing it to play catch-up all of a sudden in the last several epochs)
@@ -618,7 +692,16 @@ def main():
   starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
   torch.cuda.synchronize()  ## clean up any pre-net setup operations
 
-  if True:  ## Sometimes we need a conditional/for loop here, this is placed to save the trouble of needing to indent
+  # Compute EL2N and GraNd scores pre-training.
+  if compute_scores:
+    el2n_scores, grand_scores = evaluate_el2n_and_grand(net, epoch=-1)
+  else:
+    el2n_scores, grand_scores = None, None
+
+  epoch_scores = {-1: {'el2n': el2n_scores, 'grand': grand_scores}}
+  ema_val_acc=None
+
+  if not only_scores_at_init:  ## Sometimes we need a conditional/for loop here, this is placed to save the trouble of needing to indent
     for epoch in range(math.ceil(hyp['misc']['train_epochs'])):
       #################
       # Training Mode #
@@ -706,6 +789,14 @@ def main():
           ema_val_acc = torch.stack(acc_list_ema).mean().item()
 
         val_loss = torch.stack(loss_list_val).mean().item()
+
+      # Evaluate EL2N and GraNd scores
+      if compute_scores:
+        el2n_scores, grand_scores = evaluate_el2n_and_grand(net, epoch)
+      else:
+        el2n_scores, grand_scores = None, None
+      epoch_scores[epoch] = {'el2n': el2n_scores, 'grand': grand_scores, 'val_acc': val_acc, 'ema_val_acc': ema_val_acc, 'val_loss': val_loss, 'train_acc': train_acc, 'train_loss': train_loss, 'time': total_time_seconds}
+
       # We basically need to look up local variables by name so we can have the names, so we can pad to the proper column width.
       ## Printing stuff in the terminal can get tricky and this used to use an outside library, but some of the required stuff seemed even
       ## more heinous than this, unfortunately. So we switched to the "more simple" version of this!
@@ -718,11 +809,8 @@ def main():
       ## We also check to see if we're in our final epoch so we can print the 'bottom' of the table for each round.
       print_training_details(list(map(partial(format_for_table, locals=locals()), logging_columns_list)),
                              is_final_entry=(epoch >= math.ceil(hyp['misc']['train_epochs'] - 1)))
-  return ema_val_acc  # Return the final ema accuracy achieved (not using the 'best accuracy' selection strategy, which I think is okay here....)
+  return ema_val_acc, epoch_scores  # Return the final ema accuracy achieved (not using the 'best accuracy' selection strategy, which I think is okay here....)
 
 
 if __name__ == "__main__":
-  acc_list = []
-  for run_num in range(25):
-    acc_list.append(torch.tensor(main()))
-  print("Mean and variance:", (torch.mean(torch.stack(acc_list)).item(), torch.var(torch.stack(acc_list)).item()))
+  print(main())
