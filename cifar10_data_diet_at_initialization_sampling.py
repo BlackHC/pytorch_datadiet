@@ -22,7 +22,7 @@ from torchvision import models, datasets, transforms
 
 import numpy as np
 
-#%%
+#%% YOU CAN SKIP EVERYTHING AND GO TO "START HERE" IF YOU WANT TO GENERATE THE PLOTS FROM CACHED RESULTS
 
 def get_CIFAR10(root="./"):
     input_size = 32
@@ -276,7 +276,7 @@ np.save('train_input_stddevs.npy', train_input_stddevs)
 # Save train_grad_norms in file
 np.save('test_input_stddevs.npy', test_input_stddevs)
 
-#%%
+#%% START HERE
 
 # Load
 class TrainStats:
@@ -317,11 +317,16 @@ def assign(c):
 
   return wrapper
 
+
+def normalize(x):
+  return (x-np.min(x))/(np.max(x) - np.min(x))
+
+
 @assign(TrainStats)
 @classmethod
 def sort_by_input_norms(cls: TrainStats):
   # Sort both arrays by the norm of the gradients
-  sorted_indices = np.argsort(cls.input_norms[:len(cls.input_norms)])
+  sorted_indices = np.argsort(normalize(cls.input_norms[:len(cls.input_norms)]) + normalize(cls.grad_norms[:len(cls.input_norms)]))
   cls.sorted_grad_norms =  cls.grad_norms[sorted_indices]
   cls.sorted_input_stddevs = cls.input_stddevs[sorted_indices]
   cls.sorted_input_norms = cls.input_norms[sorted_indices]
@@ -334,6 +339,23 @@ TrainStats.sorted_input_norms.mean(), TrainStats.sorted_grad_norms.mean()
 #%%
 
 import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_theme(style="white")
+sns.set_palette("tab10")
+
+from copy import copy
+
+def make_legend_lines_opaque():
+  lines, labels = plt.gca().get_legend_handles_labels()
+
+  lines = lines
+  labels = labels
+  lines = [copy(l) for l in lines]
+  for l in lines:
+    l.set_alpha(1)
+
+  plt.legend(lines, labels, loc=0)
 
 import scipy.stats as stats
 
@@ -341,13 +363,13 @@ import scipy.stats as stats
 @classmethod
 def plot(self: TrainStats):
   # Plot
-  plt.figure(figsize=(10, 5))
+  plt.figure(figsize=(8, 8/1.618))
   #plt.plot(self.sorted_input_norms, self.sorted_grad_norms, '.')
-  plt.plot(self.sorted_grad_norms, self.sorted_input_norms, '.')
-  plt.xlabel('GraNd at init')
-  plt.ylabel('Input norm')
-  plt.title(f'{self.prefix}: Input norm vs GraNd at Init (Scatter)')
-  plt.savefig(f'{self.prefix}_input_norm_vs_grad_norm_scatter.svg', format='svg', bbox_inches='tight', pad_inches=0, transparent=True)
+  plt.scatter(self.sorted_grad_norms, self.sorted_input_norms, c="C0", s=1, alpha=0.1)
+  plt.xlabel('GraNd at Init')
+  plt.ylabel('Input Norm')
+  plt.title(f'Rank Corr.: {stats.spearmanr(self.input_norms, self.grad_norms)[0]:.2f}')
+  plt.savefig(f'joost_{self.prefix}_input_norm_vs_grad_norm_scatter.png'.lower(), dpi=300, bbox_inches='tight', pad_inches=0, transparent=True)
   plt.show()
 
   # # Plot
@@ -359,21 +381,21 @@ def plot(self: TrainStats):
   # plt.show()
 
   # Plot both as separate sorted plots
-  plt.figure(figsize=(10, 5))
-  plt.plot(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, '.', label="Input norm", alpha=0.2,zorder=10)
-  plt.plot(list(range(len(self.sorted_grad_norms))), self.sorted_grad_norms, '.', label="GraNd at init", alpha=0.2)
+  plt.figure(figsize=(8, 8/1.618))
+  plt.scatter(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, label="Input norm", s=1, alpha=0.1,zorder=10)
+  plt.scatter(list(range(len(self.sorted_grad_norms))), self.sorted_grad_norms, label="GraNd at init", s=1, alpha=0.1)
   #plt.ylabel('Norm')
-  plt.xlabel('Sorted')
+  plt.xlabel("Sorted by Avg Norm'ed Score")
   plt.ylabel('Score')
-  plt.title(f'{self.prefix}: Input norm vs GraNd at Init (Sorted)')
-  plt.savefig(f'{self.prefix}_input_norm_vs_grad_norm_sorted.svg', format='svg', bbox_inches='tight', pad_inches=0,
+  plt.title(f'Rank Corr.: {stats.spearmanr(self.input_norms, self.grad_norms)[0]:.2f}')
+  make_legend_lines_opaque()
+  plt.savefig(f'joost_{self.prefix}_input_norm_vs_grad_norm_sorted.png'.lower(), dpi=300, bbox_inches='tight', pad_inches=0,
               transparent=True)
-  plt.legend()
   plt.show()
 
   ratio = (self.sorted_grad_norms / self.sorted_input_norms)
   # Plot ratio histogram
-  plt.figure(figsize=(10, 5))
+  plt.figure(figsize=(8, 8/1.618))
   _, bins, _ = plt.hist(ratio, bins=100)
   ratio_mean = np.mean(ratio)
   ratio_std = np.std(ratio)  
@@ -391,53 +413,53 @@ def plot(self: TrainStats):
   plt.plot(bin_middle, expected_counts)
   plt.xlabel('Exp(Gradient norm / Input norm)')
   plt.ylabel('Count')
-  plt.title(f'{self.prefix}: Gradient norm / Input norm')
-  plt.savefig(f'{self.prefix}_input_norm_div_grad_norm.svg', format='svg', bbox_inches='tight', pad_inches=0, transparent=True)
+  #plt.title(f'{self.prefix}: Gradient norm / Input norm')
+  plt.savefig(f'joost_{self.prefix}_input_norm_div_grad_norm.png'.lower(), dpi=300, bbox_inches='tight', pad_inches=0, transparent=True)
   plt.show()
 
-  plt.figure(figsize=(10, 5))
-  #plt.plot(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, '.', label="Input norm", alpha=0.2,zorder=10)
-  plt.plot(list(range(len(self.sorted_grad_norms))), ratio, '.', label="Ratio", alpha=0.2)
-  # Sample from ratio mean and std to generate fake scores
-  fake_ratio = np.random.normal(ratio_mean, ratio_std, len(ratio))
-  plt.plot(list(range(len(fake_ratio))), fake_ratio, '.', label="Fake Ratio", alpha=0.2)
-  #plt.ylabel('Norm')
-  plt.xlabel('Sorted')
-  plt.ylabel('Score')
-  plt.title('Input norm vs gradient norm')
-  plt.legend()
-  plt.show()
+  # plt.figure(figsize=(10, 5))
+  # #plt.plot(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, '.', label="Input norm", alpha=0.2,zorder=10)
+  # plt.plot(list(range(len(self.sorted_grad_norms))), ratio, '.', label="Ratio", alpha=0.2)
+  # # Sample from ratio mean and std to generate fake scores
+  # fake_ratio = np.random.normal(ratio_mean, ratio_std, len(ratio))
+  # plt.plot(list(range(len(fake_ratio))), fake_ratio, '.', label="Fake Ratio", alpha=0.2)
+  # #plt.ylabel('Norm')
+  # plt.xlabel('Sorted')
+  # plt.ylabel('Score')
+  # plt.title('Input norm vs gradient norm')
+  # plt.legend()
+  # plt.show()
 
-  # Plot sorted ratio and fake_ratio
-  plt.figure(figsize=(10, 5))
-  plt.plot(list(range(len(self.sorted_grad_norms))), np.sort(ratio), '.', label="Ratio", alpha=0.2)
-  plt.plot(list(range(len(self.sorted_grad_norms))), np.sort(fake_ratio), '.', label="Fake Ratio", alpha=0.2)
-  plt.xlabel('Individually Sorted')
-  plt.ylabel('Ratio')
-  plt.title('Ratio vs Fake Ratio')
-  plt.legend()
-  plt.show()
-
-  plt.figure(figsize=(10, 5))
-  fake_scores = self.sorted_input_norms * (fake_ratio)
-  plt.plot(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, '.', label="Input norm", alpha=0.2,zorder=10)
-  plt.plot(list(range(len(self.sorted_grad_norms))), self.sorted_grad_norms, '.', label="Gradient norm", alpha=0.2)
-  plt.plot(list(range(len(fake_scores))), fake_scores, '.', label="Fake scores", alpha=0.2)
-  plt.xlabel('Index')
-  plt.ylabel('Score')
-  plt.title(f'{self.__name__}: Input norm vs gradient norm')
-  plt.legend()
-  plt.show()
+  # # Plot sorted ratio and fake_ratio
+  # plt.figure(figsize=(10, 5))
+  # plt.plot(list(range(len(self.sorted_grad_norms))), np.sort(ratio), '.', label="Ratio", alpha=0.2)
+  # plt.plot(list(range(len(self.sorted_grad_norms))), np.sort(fake_ratio), '.', label="Fake Ratio", alpha=0.2)
+  # plt.xlabel('Individually Sorted')
+  # plt.ylabel('Ratio')
+  # plt.title('Ratio vs Fake Ratio')
+  # plt.legend()
+  # plt.show()
+  #
+  # plt.figure(figsize=(10, 5))
+  # fake_scores = self.sorted_input_norms * (fake_ratio)
+  # plt.plot(list(range(len(self.sorted_input_norms))), self.sorted_input_norms, '.', label="Input norm", alpha=0.2,zorder=10)
+  # plt.plot(list(range(len(self.sorted_grad_norms))), self.sorted_grad_norms, '.', label="Gradient norm", alpha=0.2)
+  # plt.plot(list(range(len(fake_scores))), fake_scores, '.', label="Fake scores", alpha=0.2)
+  # plt.xlabel('Index')
+  # plt.ylabel('Score')
+  # plt.title(f'{self.__name__}: Input norm vs gradient norm')
+  # plt.legend()
+  # plt.show()
 
   # Compute Spearman rank correlation from scipy
-  corr = stats.spearmanr(self.input_norms, self.grad_norms)[0]
-  print("Correlation between input and gradient norms (Spearman):", corr)
+  corr_input_norm_vs_grand_at_init = stats.spearmanr(self.input_norms, self.grad_norms)[0]
+  print(f"{self.prefix} ({len(self.batched_grad_norms)}: Correlation between input and gradient norms (Spearman Rank):", corr_input_norm_vs_grand_at_init)
 
-  corr = stats.spearmanr(fake_scores, self.sorted_input_norms)[0]
-  print("Correlation between fake scores and input norms (Spearman):", corr)
+  #corr_input_norm_vs_grand_at_init = stats.spearmanr(fake_scores, self.sorted_input_norms)[0]
+  #print("Correlation between fake scores and input norms (Spearman):", #corr_input_norm_vs_grand_at_init)#
 
-  corr = stats.spearmanr(fake_scores, self.sorted_grad_norms)[0]
-  print("Correlation between fake scores and gradient norms (Spearman):", corr)
+  #corr_input_norm_vs_grand_at_init = stats.spearmanr(fake_scores, self.sorted_grad_norms)[0]
+  #print("Correlation between fake scores and gradient norms (Spearman):", corr_input_norm_vs_grand_at_init)
 
 #%%
 

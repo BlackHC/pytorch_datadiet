@@ -82,6 +82,10 @@ def compute_scores_at_init(idx):
 results_at_init = [compute_scores_at_init(idx) for idx in tqdm(range(100))]
 
 #%%
+del results_at_init[8]
+mean_grand_scores_at_init_100 = np.mean([result[1][-1]["grand"] for result in results_at_init], axis=0)
+
+#%%
 
 @memory.cache()
 def compute_mean_grand_scores_at_epoch_1():
@@ -91,14 +95,29 @@ def compute_mean_grand_scores_at_epoch_1():
 
 mean_grand_scores_at_epoch_1 = compute_mean_grand_scores_at_epoch_1()
 
+#%%
+from copy import copy
+
+def make_legend_lines_opaque():
+  lines, labels = plt.gca().get_legend_handles_labels()
+
+  lines = lines
+  labels = labels
+  lines = [copy(l) for l in lines]
+  for l in lines:
+    l.set_alpha(1)
+
+  plt.legend(lines, labels, loc=0)
 
 #%%
 
 def plot_scores(scoreA, scoreB, scoreALabel, scoreBLabel):
-  plt.figure(figsize=(10, 5))
+  plt.figure(figsize=(8, 8/1.618))
   # Normalize the scores (x and y) separately
-  scoreA_norm = (scoreA - np.median(scoreA)) / (scoreA.max() - scoreA.min())
-  scoreB_norm = (scoreB - np.median(scoreB)) / (scoreB.max() - scoreB.min())
+  #scoreA_norm = (scoreA - np.median(scoreA)) / (scoreA.max() - scoreA.min())
+  #scoreB_norm = (scoreB - np.median(scoreB)) / (scoreB.max() - scoreB.min())
+  scoreA_norm = (scoreA - np.min(scoreA)) / (scoreA.max() - scoreA.min())
+  scoreB_norm = (scoreB - np.min(scoreB)) / (scoreB.max() - scoreB.min())
   combined_score = scoreA_norm + scoreB_norm
   # Sort the scores by combined_score
   sorted_indices = np.argsort(combined_score)
@@ -107,23 +126,38 @@ def plot_scores(scoreA, scoreB, scoreALabel, scoreBLabel):
   plt.scatter(idx, scoreA_norm[sorted_indices], label=scoreALabel, s=1, alpha=0.1)
   plt.scatter(idx, scoreB_norm[sorted_indices], label=scoreBLabel, s=1, alpha=0.1)
   # Set title
-  plt.title(f"{scoreBLabel} vs {scoreALabel} (rcorr={spearmanr(scoreA, scoreB)[0]:.2f})")
-  plt.xlabel("Sorted by combined score")
-  plt.ylabel("Normalized Score (-median/score range)")
-  plt.legend()
+  plt.title(f"Rank Corr.: {spearmanr(scoreA, scoreB)[0]:.2f}")
+  plt.xlabel("Sorted by Avg Norm'ed Score")
+  plt.ylabel("Normalized Score (Score-Min/(Max-Min))")
+
+  make_legend_lines_opaque()
+
+  #plt.legend()
+
+  def label_to_filename(label):
+    return label.lower().replace(" ", "_")
+
+  plt.savefig(f'hlb_{label_to_filename(scoreALabel)}_vs_{label_to_filename(scoreBLabel)}_sorted.png', dpi=300, bbox_inches='tight', pad_inches=0,
+              transparent=True)
   plt.show()
 
+#%%
 
 # Plot grand score vs input norm
-plot_scores(input_norm_scores, mean_grand_scores_at_init, "Input norm", "Grand score at init")
+plot_scores(input_norm_scores, mean_grand_scores_at_init, "Input Norm", "GraNd at Init")
 
 #%%
 
-plot_scores(mean_el2n_scores_at_epoch_1, mean_grand_scores_at_init, "EL2N score at epoch 1", "GraNd score at init")
+# Plot grand score vs input norm
+plot_scores(input_norm_scores, mean_grand_scores_at_init_100, "Input Norm", "GraNd at Init (100 samples)")
 
 #%%
 
-plot_scores(mean_el2n_scores_at_epoch_1, mean_grand_scores_at_epoch_1, "EL2N score at epoch 1", "GraNd score at epoch 1")
+plot_scores(mean_el2n_scores_at_epoch_1, mean_grand_scores_at_init, "EL2N at Epoch 1", "GraNd at Init")
+
+#%%
+
+plot_scores(mean_el2n_scores_at_epoch_1, mean_grand_scores_at_epoch_1, "EL2N at Epoch 1", "GraNd at Epoch 1")
 
 #%%
 
@@ -169,10 +203,10 @@ def train_random_subset_model(idx, training_fraction):
 
 #%%
 
-training_fractions = [0.9, 0.8, 0.7, 0.6, 0.5]
+training_fractions = [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
 
 random_subset_models = {
-  training_fraction: [train_random_subset_model(idx, training_fraction) for idx in tqdm(range(3))]
+  training_fraction: [train_random_subset_model(idx, training_fraction) for idx in tqdm(range(10))]
                       for training_fraction in training_fractions
 }
 # Add results from results at training_fraction=1
@@ -191,11 +225,11 @@ def train_score_based_subset_model(scores, idx, training_fraction):
 subset_models_by_score_training_fraction = {
   score_type: {
     training_fraction: [
-      train_score_based_subset_model(scores, idx, training_fraction) for idx in tqdm(range(3))]
+      train_score_based_subset_model(scores, idx, training_fraction) for idx in tqdm(range(10))]
       for training_fraction in training_fractions
-  } for score_type, scores in [("EL2N @ Epoch 1", mean_el2n_scores_at_epoch_1),
-                               ("GraNd @ Epoch 1", mean_grand_scores_at_epoch_1),
-                               ("GraNd at init", mean_grand_scores_at_init),
+  } for score_type, scores in [("EL2N at Epoch 1", mean_el2n_scores_at_epoch_1),
+                               ("GraNd at Epoch 1", mean_grand_scores_at_epoch_1),
+                               ("GraNd at Init", mean_grand_scores_at_init),
                                ("Input Norm", input_norm_scores),
                                ]
 }
@@ -230,7 +264,9 @@ subset_models_df = pd.DataFrame(rows)
 
 # Seaborn plot the results by training fraction and score type
 import seaborn as sns
-sns.set_theme(style="whitegrid")
+sns.set_style("white")
+# make the background opaque
+#sns.set(rc={'figure.facecolor':'white', 'figure.edgecolor':'white'})
 
 # Initialize the matplotlib figure
 f, ax = plt.subplots(figsize=(8, 8/1.618))
@@ -238,8 +274,38 @@ f, ax = plt.subplots(figsize=(8, 8/1.618))
 # Plot the training fraction against the accuracy
 sns.set_color_codes("pastel")
 sns.lineplot(x="Pruned Fraction", y="Test Accuracy", data=subset_models_df, hue="Metric",
-             hue_order=["EL2N @ Epoch 1", "GraNd @ Epoch 1", "Random", "GraNd at init", "Input Norm"],)
+             hue_order=["EL2N at Epoch 1", "GraNd at Epoch 1", "Random", "Input Norm", "GraNd at Init"],)
 # save to svg for better quality
-plt.savefig("figure11_repro_cifar10_hlb.svg", format="svg", bbox_inches="tight", pad_inches=0, transparent=True,)
+plt.savefig("hlb_figure11_repro_cifar10.pdf", bbox_inches="tight", pad_inches=0, transparent=True,)
 plt.show()
 
+#%%
+
+# Creata "rank correlation" table between input norm, grad_norm, late_grad_norm, forget_scores, and l2_error_scores
+import pandas as pd
+import seaborn as sns
+
+# Create a dataframe with the correlations
+corr_df = pd.DataFrame({'Input Norm': input_norm_scores,
+                        'GraNd at Init': mean_grand_scores_at_init,
+                        'GraNd at Epoch 1': mean_grand_scores_at_epoch_1,
+                        'EL2N at Epoch 1': mean_el2n_scores_at_epoch_1,
+                        })
+
+
+# Create a "rank correlation" table between input norm, grad_norm, late_grad_norm, forget_scores, and l2_error_scores
+rcorrs = corr_df.corr(method='spearman')
+
+# Remove all columns with column index greater row index
+rcorrs = rcorrs.where(np.triu(np.ones(rcorrs.shape)).astype(bool))
+
+#rcorrs = rcorrs.where(~np.triu(np.ones(rcorrs.shape)).astype(bool))
+
+# Plot the heatmap
+plt.figure(figsize=(8,8/1.618))
+sns.heatmap(rcorrs, annot=True, cmap='coolwarm')
+plt.savefig('hlb_rankcorrelation_heatmap.pdf',
+             bbox_inches='tight', pad_inches=0, transparent=True)
+# plt.savefig('orgrepo_rankcorrelation_heatmap.png', dpi=300,
+#             bbox_inches='tight', pad_inches=0, transparent=True)
+plt.show()
