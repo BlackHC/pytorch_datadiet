@@ -141,6 +141,22 @@ def plot_scores(scoreA, scoreB, scoreALabel, scoreBLabel):
               transparent=True)
   plt.show()
 
+  plt.figure(figsize=(8, 8 / 1.618))
+
+  plt.scatter(scoreA, scoreB, s=1, alpha=0.1)
+  # Set title
+  plt.title(f"Rank Corr.: {spearmanr(scoreA, scoreB)[0]:.2f}")
+  plt.xlabel(scoreALabel)
+  plt.ylabel(scoreBLabel)
+
+  def label_to_filename(label):
+    return label.lower().replace(" ", "_")
+
+  plt.savefig(f'hlb_{label_to_filename(scoreALabel)}_vs_{label_to_filename(scoreBLabel)}_scatter.png', dpi=300,
+              bbox_inches='tight', pad_inches=0,
+              transparent=True)
+  plt.show()
+
 #%%
 
 # Plot grand score vs input norm
